@@ -1,0 +1,112 @@
+# Thanks to https://medium.com/neudesic-innovation/building-multi-platform-container-images-with-github-actions-e495f9441ad3
+
+name: Build Docker images for each architecture
+
+# To be used before docker-multiarch-merge
+# Note that this workflow pushes digests as the digests-linux-<ARCHITECTURE> artifacts
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: "Docker registry to use, e.g. ghcr.io"
+        required: true
+        type: string
+      username:
+        description: >
+          Username to use to log into Docker registry.
+          This usually is your GitHub username.
+        required: true
+        type: string
+      image-name:
+        description: >
+          Name of the Docker image itself (minus the registry).
+          Usually is USERNAME/REPOSITORY.
+        required: true
+        type: string
+      git-version-tag:
+        description: "Version tag to use"
+        type: string
+      docker-build-context:
+        description: "Path to use as build context for Docker build"
+        type: string
+        default: "."
+      dockerfile-path:
+        description: "Path of Dockerfile, relative to repository root"
+        type: string
+        default: "./Dockerfile"
+    secrets:
+      password:
+        description: "Password/token to use for registry"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build Docker image
+    strategy:
+      matrix:
+        include:
+          - architecture: amd64
+            # renovate:github-runners
+            os: ubuntu-26.04
+          - architecture: arm64
+            # renovate:github-runners
+            os: ubuntu-26.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Normalize variables
+        id: normalize
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+        run: |
+          printf "registry=%s\n" "${REGISTRY,,}" >> "$GITHUB_OUTPUT"
+          printf "image_name=%s\n" "${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+          printf "full_image_name=%s/%s\n" "${REGISTRY,,}" "${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log into container registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ${{ steps.normalize.outputs.registry }}
+          username: ${{ inputs.username }}
+          password: ${{ secrets.password }}
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ${{ inputs.docker-build-context }}
+          file: ${{ inputs.dockerfile-path }}
+          # We want to avoid polluting the registry with too many arch-specific tags
+          # We also want to be able to have descriptions
+          outputs: type=registry,name=${{ steps.normalize.outputs.full_image_name }},push-by-digest=true,oci-mediatypes=true
+          platforms: linux/${{ matrix.architecture }}
+          build-args: |
+            GIT_VERSION_TAG=${{ inputs.git-version-tag }}
+            GIT_VERSION_HASH=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.architecture }}
+          # We want BuildKit attestation
+          provenance: true
+          sbom: true
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p $RUNNER_TEMP/digests
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - name: Upload digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digests-linux-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1

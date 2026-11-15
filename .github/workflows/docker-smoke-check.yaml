@@ -1,0 +1,54 @@
+name: Smoke test Docker image
+
+# Note that this assumes that Docker Compose is used.
+
+on:
+  workflow_call:
+    inputs:
+      runner-version:
+        description: >
+          GitHub Runner to use, e.g. ubuntu-latest-arm.
+          This depends on the architecture that the original image was built for.
+        type: string
+        # renovate:github-runners
+        default: ubuntu-26.04-arm
+      artifact-name:
+        description: "Name of the artifact to use for the image"
+        type: string
+        default: current-image
+      image-file-name:
+        description: "File name to use for the built image"
+        type: string
+        default: current-image.tar
+      compose-file-path:
+        description: "File path, relative to repository root, of the Compose stack for the smoke test"
+        type: string
+        default: tests/compose.smoke-test.yaml
+      exit-code-from:
+        description: "Name of Compose service to follow and exit with"
+        type: string
+        default: test-runner
+
+jobs:
+  smoke-check:
+    name: Smoke check image
+    runs-on: ${{ inputs.runner-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download image artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}
+      - name: Load Docker image
+        run: |
+          docker load --input ${{ runner.temp }}/${{ inputs.image-file-name }}
+          docker image ls -a
+      - name: Run smoke tests
+        run: |
+          docker compose -f ${{ inputs.compose-file-path }} up --exit-code-from ${{ inputs.exit-code-from }}
+      - name: Take down Compose environment
+        if: always()
+        run: |
+          docker compose -f ${{ inputs.compose-file-path }} down

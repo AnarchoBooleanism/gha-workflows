@@ -1,0 +1,40 @@
+# Thanks to https://medium.com/neudesic-innovation/building-multi-platform-container-images-with-github-actions-e495f9441ad3
+
+name: Validate versioning for Docker multi-arch image
+
+# Try to use this BEFORE building, so per-architecture images aren't pushed to the registry without a main manifest to match
+
+on:
+  workflow_call:
+    inputs:
+      git-version-tag:
+        description: "Version tag to use"
+        type: string
+      versioning-type:
+        description: >
+          Versioning type to use.
+          Must be one of "semver-with-v", "semver-raw", or "edge".
+        # Note that "semver-with-v" refers to the final Docker image tags. The Git version tags can omit the v, if desired.
+        type: string
+        required: true
+
+jobs:
+  validate-versioning-type:
+    name: Validate versioning type
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - name: Validate versioning type
+        env:
+          GIT_VERSION_TAG: ${{ inputs.git-version-tag }}
+          VERSIONING_TYPE: ${{ inputs.versioning-type }}
+        run: |
+          case "$VERSIONING_TYPE" in
+            edge) ;;
+            semver-with-v|semver-raw)
+              if [[ -z "$GIT_VERSION_TAG" ]]; then
+                printf "::error::git-version-tag is required for $VERSIONING_TYPE\n"
+                exit 1
+              fi
+              ;;
+            *) printf "::error::Invalid versioning type '%s'\n" "$VERSIONING_TYPE" && exit 1 ;;
+          esac
