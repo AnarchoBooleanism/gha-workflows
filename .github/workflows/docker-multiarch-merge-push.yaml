@@ -1,0 +1,183 @@
+# Thanks to https://medium.com/neudesic-innovation/building-multi-platform-container-images-with-github-actions-e495f9441ad3
+
+name: Merge builds into multi-arch Docker image and push
+
+# To be used after docker-multiarch-build
+# Note that this workflow grabs artifacts from the digests-linux-<ARCHITECTURE> artifacts
+# For now, this assumes this is used with the GHCR
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: "Docker registry to use, e.g. ghcr.io"
+        required: true
+        type: string
+      username:
+        description: >
+          Username to use to log into Docker registry.
+          This usually is your GitHub username.
+        required: true
+        type: string
+      image-name:
+        description: >
+          Name of the Docker image itself (minus the registry).
+          Usually is USERNAME/REPOSITORY.
+        required: true
+        type: string
+      git-version-tag:
+        description: "Version tag to use"
+        type: string
+      is-prerelease:
+        description: "Whether the release is a prerelease or not"
+        type: boolean
+        default: false
+      versioning-type:
+        description: >
+          Versioning type to use. See docker-multiarch-validate-versioning for more details.
+        type: string
+        default: semver-with-v
+    secrets:
+      password:
+        description: "Password/token to use for registry"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  merge:
+    name: Merge Docker images into one
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - name: Normalize variables
+        id: normalize
+        env:
+          REGISTRY: ${{ inputs.registry }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+        run: |
+          printf "registry=%s\n" "${REGISTRY,,}" >> "$GITHUB_OUTPUT"
+          printf "image_name=%s\n" "${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+          printf "full_image_name=%s/%s\n" "${REGISTRY,,}" "${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+      - name: Download Digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+      - name: Log into GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ${{ steps.normalize.outputs.registry }}
+          username: ${{ inputs.username }}
+          password: ${{ secrets.password }}
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Get Docker Metadata (semver-with-v)
+        id: meta-semver-with-v
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        env:
+          # Should output to env.DOCKER_METADATA_OUTPUT_JSON
+          DOCKER_METADATA_SET_OUTPUT_ENV: "true"
+        with:
+          images: ${{ steps.normalize.outputs.full_image_name }}
+          # We want v in here
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.git-version-tag }},prefix=v
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.git-version-tag }},prefix=v,enable=${{ !inputs.is-prerelease }}
+            type=semver,pattern={{major}},value=${{ inputs.git-version-tag }},prefix=v,enable=${{ !inputs.is-prerelease }}
+          # Assumption is that we only publish tags for latest major, minor releases
+          flavor: |
+            latest=${{ !inputs.is-prerelease }}
+        if: ${{ inputs.versioning-type == 'semver-with-v' }}
+      - name: Get Docker Metadata (semver-raw)
+        id: meta-semver-raw
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ steps.normalize.outputs.full_image_name }}
+          tags: |
+            type=raw,value=${{ inputs.git-version-tag }}
+            type=semver,pattern={{raw}},value=${{ inputs.git-version-tag }}
+          flavor: |
+            latest=true
+        if: ${{ inputs.versioning-type == 'semver-raw' }}
+      - name: Get Docker Metadata (edge)
+        id: meta-edge
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        env:
+          # Should output to env.DOCKER_METADATA_OUTPUT_JSON
+          DOCKER_METADATA_SET_OUTPUT_ENV: "true"
+        with:
+          images: ${{ steps.normalize.outputs.full_image_name }}
+          tags: |
+            # set latest tag for main branch
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=raw,value=edge
+            type=sha
+        if: ${{ inputs.versioning-type == 'edge' }}
+      - name: Normalize metadata step outputs
+        id: meta
+        env:
+          VERSION: ${{ steps.meta-semver-with-v.outputs.version || steps.meta-semver-raw.outputs.version || steps.meta-edge.outputs.version }}
+        run: |
+          printf "version=%s\n" "$VERSION" >> $GITHUB_OUTPUT
+      - name: Create manifest list and push
+        id: push
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          FULL_IMAGE_NAME: ${{ steps.normalize.outputs.full_image_name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          shopt -s nullglob
+
+          if [[ -z "$DOCKER_METADATA_OUTPUT_JSON" ]]; then
+            printf "::error::Docker metadata JSON is empty\n"
+            exit 1
+          fi
+
+          # Using jq to avoid issues with empty lines and multi-line items
+          # Assuming tags don't use whitespace
+          read -r -a TAG_ARGS <<< "$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+
+          # Doing it this way to be very careful with space breaks
+          ANNOTATION_ARGS=()
+          while IFS= read -r annotation; do
+            [[ -n "$annotation" ]] && ANNOTATION_ARGS+=(--annotation "index:${annotation}")
+          done < <(jq -cr '.labels | to_entries | map(.key + "=" + .value)[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+
+          DIGEST_FILES=(*)
+          DIGEST_TARGETS=()
+          for file in "${DIGEST_FILES[@]}"; do
+            [[ -f "$file" ]] || continue
+            
+            if [[ ! "$file" =~ ^[a-f0-9]{64}$ ]]; then
+              printf "::error::Invalid digest filename: %s\n" "$file"
+              exit 1
+            fi
+            
+            DIGEST_TARGETS+=("${FULL_IMAGE_NAME}@sha256:${file}")
+          done
+
+          if [[ ${#DIGEST_TARGETS[@]} -eq 0 ]]; then
+            printf "::error::No digest files found\n"
+            exit 1
+          fi
+
+          docker buildx imagetools create \
+            "${TAG_ARGS[@]}" \
+            "${ANNOTATION_ARGS[@]}" \
+            "${DIGEST_TARGETS[@]}" \
+            --metadata-file "$RUNNER_TEMP/manifest-metadata.json"
+          
+          digest=$(jq -er '."containerimage.descriptor".digest' \
+            "$RUNNER_TEMP/manifest-metadata.json")
+          printf "digest=%s\n" "$digest" >> $GITHUB_OUTPUT
+          printf "Digest is: %s\n" "$digest"
+      - name: Generate artifact attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ steps.normalize.outputs.full_image_name }}
+          subject-digest: ${{ steps.push.outputs.digest }}

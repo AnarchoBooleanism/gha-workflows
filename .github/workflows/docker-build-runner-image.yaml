@@ -1,0 +1,67 @@
+name: Build Docker image (for runners)
+
+on:
+  workflow_call:
+    inputs:
+      runner-version:
+        description: >
+          GitHub Runner to use, e.g. ubuntu-latest-arm.
+          This affects the architecture being built for.
+        type: string
+        # renovate:github-runners
+        default: ubuntu-26.04-arm
+      artifact-name:
+        description: "Name of the artifact to use for the image"
+        type: string
+        default: current-image
+      image-file-name:
+        description: "File name to use for the built image"
+        type: string
+        default: current-image.tar
+      image-tag:
+        description: "Tag to use for Docker image"
+        type: string
+        default: current-image:test
+      docker-build-context:
+        description: "Path to use as build context for Docker build"
+        type: string
+        default: "."
+      dockerfile-path:
+        description: "Path of Dockerfile, relative to repository root"
+        type: string
+        default: "./Dockerfile"
+
+jobs:
+  build-runner-image:
+    name: Build image (for runners)
+    runs-on: ${{ inputs.runner-version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Determine architecture, to use for cache
+        id: arch
+        run: |
+          case "$RUNNER_ARCH" in
+            X64) architecture=amd64 ;;
+            ARM64) architecture=arm64 ;;
+            *) printf "::error::Unsupported architecture '%s'\n" "$RUNNER_ARCH" && exit 1 ;;
+          esac
+
+          printf "type=%s\n" "$architecture" >> "$GITHUB_OUTPUT"
+      - name: Build and push Docker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ${{ inputs.docker-build-context }}
+          file: ${{ inputs.dockerfile-path }}
+          tags: ${{ inputs.image-tag }}
+          outputs: type=docker,dest=${{ runner.temp }}/${{ inputs.image-file-name }}
+          cache-from: type=gha,scope=${{ steps.arch.outputs.type }}
+          cache-to: type=gha,mode=max,scope=${{ steps.arch.outputs.type }}
+      - name: Upload image artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/${{ inputs.image-file-name }}
+          retention-days: 1
