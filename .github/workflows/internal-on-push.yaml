@@ -1,0 +1,48 @@
+name: (INTERNAL) Checks, for new commits
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    branches:
+      - main
+    paths-ignore:
+      - '**/README.md' # Ignore documentation files
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/README.md' # Ignore documentation files
+
+jobs:
+  changes:
+    name: Detect changed files
+    runs-on: ubuntu-26.04-arm
+    outputs:
+      renovate: ${{ steps.changes.outputs.renovate }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Detect changed files
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        id: changes
+        with:
+          filters: |
+            renovate:
+              - ".github/renovate.jsonc"
+
+  validate-config:
+    name: Validate Renovate config
+    needs: changes
+    if: ${{ needs.changes.outputs.renovate == 'true' }}
+    runs-on: ubuntu-26.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Validate Renovate config files
+        uses: suzuki-shunsuke/github-action-renovate-config-validator@1e1604219a6b38ae9a10aff42a28a3656322c31a # v2.4.1
+  
