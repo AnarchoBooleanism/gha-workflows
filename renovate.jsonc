@@ -7,10 +7,6 @@
     "github>AnarchoBooleanism/renovate-config#v7.0.1"
   ],
 
-  "ignoreBranches": [
-    "/^release-please--/"
-  ],
-
   // Want to make sure that Release Please picks these up
   "semanticCommits": "enabled",
   "semanticCommitType": "fix",
