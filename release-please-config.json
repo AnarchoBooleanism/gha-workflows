@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": true,
+  "include-v-in-tag": true,
+  "tag-separator": "/",
+  "separate-pull-requests": true,
+  "packages": {
+    "changelogs/docker-build-test": {
+      "package-name": "docker-build-runner-image",
+      "extra-files": [
+        ".github/workflows/docker-build-runner-image.yaml",
+        ".github/workflows/docker-smoke-check.yaml"
+      ]
+    },
+    "changelogs/docker-multiarch": {
+      "package-name": "docker-multiarch",
+      "extra-files": [
+        ".github/workflows/docker-multiarch-build.yaml",
+        ".github/workflows/docker-multiarch-merge-push.yaml",
+        ".github/workflows/docker-multiarch-validate-versioning.yaml"
+      ]
+    }
+  }
+}

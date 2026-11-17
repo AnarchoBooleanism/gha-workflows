@@ -1,9 +1,0 @@
-{
-  // NOTE: This should be able to catch github-actions!
-
-  // Overall Renovate config
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "github>AnarchoBooleanism/renovate-config#v7.0.1"
-  ]
-}
